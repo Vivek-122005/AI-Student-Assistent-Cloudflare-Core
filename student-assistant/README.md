@@ -172,12 +172,16 @@ Configurable vars in `wrangler.toml`:
 - `GEMINI_RATE_LIMIT_WINDOW_SEC` and `GEMINI_RATE_LIMIT_MAX`
 - `PDF_CACHE_TTL_SEC`
 
-Debug endpoints:
+Debug & Admin endpoints:
 
+**Debug:**
 - `GET /debug/gemini-test` or `GET /debug/gemini-validate` checks Gemini from the Worker runtime
 - `GET /debug/gemini-key` returns a masked key summary for secret verification
 - `POST /debug/pdf-test` accepts `{ "pdfBase64": "..." }` and runs the PDF ingestion pipeline
 - `GET /debug/vector-test` runs a small retrieval query against Vectorize
+
+**Admin:**
+- `GET /admin/seed-demo?secret=<TELEGRAM_TOKEN>` populates demo data (exams, subjects, student profile, notes + embeddings) for demonstrations and testing. Returns a JSON summary of what was seeded.
 
 Common issues:
 
@@ -185,6 +189,28 @@ Common issues:
 - `404` on generateContent: use the full model id in `models/...` form and make sure the model supports `generateContent`
 - Timeout or large-file failures: split the PDF or lower the file size before ingestion
 - Empty extraction result: the PDF may be image-only or too sparse; use a text-based PDF or OCR first
+
+### Seeding Demo Data
+
+To populate the system with demo academic data for testing or demonstrations, call:
+
+```bash
+curl "https://<your-worker-url>/admin/seed-demo?secret=<TELEGRAM_TOKEN>"
+```
+
+This will seed:
+- **Exam Schedule** → D1 events table (May 2026, 7 exams across major subjects)
+- **Subject Registry** → KV (AML, ADM, OS, DL, DevOps with codes and categories)
+- **Student Profile** → KV under `profile:vivek` (semester 6, CGPA 8.0, Computer Science and AI)
+- **Study Notes** → KV + Vectorize (chunked, embedded notes for each subject, ready for RAG queries)
+
+Once seeded, the bot will answer questions like:
+- "What is my CGPA?"
+- "When is my OS exam?"
+- "Summarize AML notes"
+- "Explain CPU scheduling"
+
+**Note:** The seeding endpoint is guarded by your `TELEGRAM_TOKEN` secret. Requires authentication.
 
 To persist optional ingestion metadata, re-run schema migration:
 
