@@ -1,0 +1,24 @@
+name = "student-assistant"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[ai]
+binding = "AI"
+
+[[kv_namespaces]]
+binding = "NOTES_KV"
+id = "dd24d939407044a6a1c2f7153b3a230b"
+preview_id = "24e0b49355fd4a17a34c0fa3379262a8"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "student-db"
+database_id = "a8b5f66f-4137-4736-a05a-c75dea894e51"
+
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "notes-index"
+
+[triggers]
+crons = ["*/30 * * * *", "0 7 * * *"]
