@@ -60,6 +60,7 @@ export function extractUpdate(body) {
     date: message.date,
     hasFile: hasFile,
     fileId: fileData?.file_id,
+    fileUniqueId: fileData?.file_unique_id || null,
     mimeType: message.document?.mime_type || (message.photo ? 'image/jpeg' : null),
     fileName: message.document?.file_name || null,
     caption: message.caption?.trim() || ''

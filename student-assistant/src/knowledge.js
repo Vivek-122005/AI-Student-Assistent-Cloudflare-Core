@@ -25,6 +25,29 @@ export async function storeRawNote(env, noteId, text, metadata = {}) {
   }));
 }
 
+export async function storeNoteChunks(env, noteId, chunks, metadata = {}) {
+  await env.NOTES_KV.put(`notechunks:${noteId}`, JSON.stringify({
+    chunks,
+    metadata: {
+      ...metadata,
+      noteId,
+      createdAt: new Date().toISOString(),
+      chunkCount: chunks.length
+    }
+  }));
+}
+
+export async function getNoteChunks(env, noteId) {
+  const raw = await env.NOTES_KV.get(`notechunks:${noteId}`);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed.chunks) ? parsed.chunks : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 export async function getRawNote(env, noteId) {
   const raw = await env.NOTES_KV.get(`note:${noteId}`);
   if (!raw) return null;
@@ -50,6 +73,7 @@ export async function listNotes(env) {
 export async function deleteNote(env, noteId) {
   await env.NOTES_KV.delete(`note:${noteId}`);
   await env.NOTES_KV.delete(`noteidx:${noteId}`);
+  await env.NOTES_KV.delete(`notechunks:${noteId}`);
   return true;
 }
 
@@ -71,7 +95,7 @@ export async function embedText(env, text) {
   return embedding;
 }
 
-export async function storeChunkEmbedding(env, noteId, chunkIndex, chunkText, embedding) {
+export async function storeChunkEmbedding(env, noteId, chunkIndex, chunkText, embedding, metadata = {}) {
   const vectorId = `${noteId}-${chunkIndex}`;
   await env.VECTORIZE.insert([{
     id: vectorId,
@@ -79,13 +103,15 @@ export async function storeChunkEmbedding(env, noteId, chunkIndex, chunkText, em
     metadata: {
       noteId,
       chunkIndex,
-      preview: chunkText.slice(0, 100)
+      preview: chunkText.slice(0, 100),
+      subject: metadata.subject || null,
+      topic: metadata.topic || null
     }
   }]);
   return vectorId;
 }
 
-export async function ingestNote(env, text, subject = 'General') {
+export async function ingestNote(env, text, subject = 'General', options = {}) {
   const trimmed = text.trim();
   if (trimmed.length < 20) {
     throw new Error('Note is too short (minimum 20 characters). Add more content.');
@@ -94,13 +120,31 @@ export async function ingestNote(env, text, subject = 'General') {
     throw new Error('Note is too long (maximum 15,000 characters). Please split into smaller notes.');
   }
 
-  const noteId = generateNoteId();
-  await storeRawNote(env, noteId, trimmed, { subject });
+  const noteId = options.noteId || generateNoteId();
+  const topic = options.topic || null;
+  const chunkList = Array.isArray(options.chunks) && options.chunks.length > 0
+    ? options.chunks.map(c => (c || '').trim()).filter(Boolean)
+    : chunkText(trimmed);
 
-  const chunks = chunkText(trimmed);
+  await storeRawNote(env, noteId, trimmed, {
+    subject,
+    topic,
+    sourceType: options.sourceType || 'text',
+    sourceFileId: options.sourceFileId || null,
+    sourceHash: options.sourceHash || null,
+    processor: options.processor || null
+  });
+
+  const chunks = chunkList;
   if (chunks.length === 0) {
     throw new Error('Note could not be split into processable chunks.');
   }
+
+  await storeNoteChunks(env, noteId, chunks, {
+    subject,
+    topic,
+    sourceType: options.sourceType || 'text'
+  });
 
   let embeddedCount = 0;
   const failedChunks = [];
@@ -108,7 +152,7 @@ export async function ingestNote(env, text, subject = 'General') {
   for (let i = 0; i < chunks.length; i++) {
     try {
       const embedding = await embedText(env, chunks[i]);
-      await storeChunkEmbedding(env, noteId, i, chunks[i], embedding);
+      await storeChunkEmbedding(env, noteId, i, chunks[i], embedding, { subject, topic });
       embeddedCount++;
     } catch (err) {
       console.error(JSON.stringify({

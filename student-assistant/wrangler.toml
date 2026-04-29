@@ -22,3 +22,11 @@ index_name = "notes-index"
 
 [triggers]
 crons = ["*/30 * * * *", "0 7 * * *"]
+
+[vars]
+GEMINI_MODEL = "models/gemini-flash-latest"
+PDF_MAX_BYTES = "10485760"
+GEMINI_TIMEOUT_MS = "45000"
+GEMINI_RATE_LIMIT_WINDOW_SEC = "600"
+GEMINI_RATE_LIMIT_MAX = "6"
+PDF_CACHE_TTL_SEC = "604800"

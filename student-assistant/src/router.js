@@ -17,54 +17,7 @@ import { generateAnswer, formatRAGResponse, generateNoResultsResponse } from './
 import { findWikiNode, getWikiNodesBySubject, listAllWikiNodes } from './wiki.js';
 import { parseReminderDetails, createReminder } from './reminders.js';
 import { isUserWhitelisted, checkRateLimit, sanitizeInput, validateNoteInput, validateReminderInput } from './db.js';
-
-export async function classifyIntent(text, env) {
-  // Handle explicit commands first (no AI needed)
-  if (!text || text.trim() === '') return 'unknown';
-  const t = text.toLowerCase().trim();
-  
-  if (t.startsWith('/note') || t.startsWith('/add note')) return 'ingest';
-  if (t.startsWith('/schedule add') || t === 'add class' || t === 'add lecture') return 'schedule_add';
-  if (t.startsWith('/event add') || t.startsWith('add event') ||
-      t.startsWith('add deadline') || t.startsWith('add exam') ||
-      t.startsWith('add assignment')) return 'event_add';
-  if (t.startsWith('/schedule delete')) return 'schedule';
-  if (t.startsWith('/event delete')) return 'event';
-  if (t.startsWith('/notes delete')) return 'ingest';
-  if (t.startsWith('/event ') && !t.startsWith('/event add') && !t.startsWith('/event delete')) return 'event';
-  if (t.startsWith('/schedule ') && !t.startsWith('/schedule add') && !t.startsWith('/schedule delete')) return 'schedule';
-  if (t === '/today' || t === '/timetable') return 'schedule';
-  if (t === '/upcoming' || t === '/events' || t === '/events all') return 'event';
-  if (t === '/notes list' || t === '/notes') return 'ingest';
-  if (t.startsWith('/wiki ')) return 'summary';
-  if (t === '/wiki list' || t === '/wiki') return 'summary';
-
-  // Use AI for natural language classification
-  const prompt = `Classify the user's intent from the following message. Choose one from: 'schedule', 'conceptual', 'factual', 'summarize', 'set_reminder', 'unknown'.
-
-Message: "${text}"
-
-Intent:`;
-
-  try {
-    const response = await env.AI.run('@cf/mistral/mistral-7b-instruct-v0.2', {
-      prompt,
-      max_tokens: 20
-    });
-    const intent = response.response?.trim().toLowerCase();
-
-    const validIntents = ['schedule', 'conceptual', 'factual', 'summarize', 'set_reminder'];
-    if (validIntents.includes(intent)) {
-      console.log(JSON.stringify({ event: 'intent_classified', textPreview: text.slice(0, 50), intent }));
-      return intent;
-    }
-    console.warn(JSON.stringify({ event: 'intent_ai_unknown', aiResponse: intent, textPreview: text.slice(0, 50) }));
-    return 'unknown';
-  } catch (error) {
-    console.error(JSON.stringify({ event: 'intent_classification_error', error: error.message }));
-    return 'unknown';
-  }
-}
+import { detectIntent, normalizeQuery } from './intent.js';
 
 export async function handleMessage(update, env) {
   const { text, chatId, username } = update;
@@ -86,7 +39,8 @@ export async function handleMessage(update, env) {
     return "I couldn't understand that message. Please try again.";
   }
 
-  const intent = await classifyIntent(sanitizedText, env);
+  // New Hybrid Intent Detection
+  const intent = await detectIntent(sanitizedText, env);
 
   console.log(JSON.stringify({
     event: 'message_received',
@@ -97,18 +51,17 @@ export async function handleMessage(update, env) {
   }));
 
   switch (intent) {
-    case 'ingest':       return await handleIngest(sanitizedText, env);
-    case 'schedule_add': return await handleScheduleAdd(sanitizedText, env);
-    case 'event_add':    return await handleEventAdd(sanitizedText, env);
-    case 'schedule':    return await handleSchedule(sanitizedText, env);
-    case 'event':       return await handleEvent(sanitizedText, env);
-    case 'reminder':   return await handleReminder(sanitizedText, env);
-    case 'conceptual': return await handleConceptual(sanitizedText, env);
-    case 'summary':    return await handleSummary(sanitizedText, env);
-    case 'factual':    return await handleFactual(sanitizedText, env);
-    case 'summarize':   return await handleSummarizeIntent(sanitizedText, env);
-    case 'set_reminder': return await handleSetReminderIntent(sanitizedText, env, chatId);
-    default:           return handleUnknown(sanitizedText);
+    case 'today_classes':    return await handleTodaySchedule(env);
+    case 'upcoming_events':   return await handleUpcomingEvents(env, sanitizedText);
+    case 'schedule_query':    return await handleSchedule(sanitizedText, env);
+    case 'add_note':         return await handleIngest(sanitizedText, env);
+    case 'search_notes':      return await handleConceptual(sanitizedText, env);
+    case 'summarize':        return await handleSummary(sanitizedText, env);
+    case 'student_profile': return await handleStudentProfileQuery(sanitizedText, env);
+    case 'reminder':         return await handleSetReminderIntent(sanitizedText, env, chatId);
+    case 'ingest':           return await handleIngest(sanitizedText, env);
+    case 'unknown':
+    default:                 return handleUnknown(sanitizedText);
   }
 }
 
@@ -406,7 +359,39 @@ async function handleSchedule(text, env) {
     return await handleFullTimetable(env);
   }
 
+  if (lower.includes('tomorrow')) {
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const tomorrow = dayNames[(new Date().getDay() + 1) % 7];
+    return await handleDaySchedule(env, tomorrow);
+  }
+
+  const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+  for (const d of days) {
+    if (lower.includes(d)) {
+      return await handleDaySchedule(env, d.charAt(0).toUpperCase() + d.slice(1));
+    }
+  }
+
   return await handleTodaySchedule(env);
+}
+
+async function handleDaySchedule(env, day) {
+  try {
+    const classes = await getTimetableByDay(env, day);
+
+    if (classes.length === 0) {
+      return `📅 *No classes on ${day}*\n\nEnjoy your free day!`;
+    }
+
+    const lines = classes.map(c =>
+      `• ${c.start_time}–${c.end_time}  *${c.subject}*${c.location ? `  📍${c.location}` : ''}`
+    );
+
+    return `📅 *${day}'s Classes*\n\n${lines.join('\n')}`;
+  } catch (err) {
+    console.error(JSON.stringify({ event: 'schedule_day_failed', day, error: err.message }));
+    return `Sorry, I couldn't fetch the schedule for ${day}.`;
+  }
 }
 
 async function handleTodaySchedule(env) {
@@ -538,27 +523,136 @@ async function handleEvent(text, env) {
   return await handleUpcomingEvents(env, days);
 }
 
-async function handleUpcomingEvents(env, daysAhead = 7) {
+function formatTime12(time24) {
+  if (!time24) return '';
+  const m = String(time24).match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return String(time24);
+  const hh = parseInt(m[1], 10);
+  const mm = m[2];
+  const suffix = hh >= 12 ? 'PM' : 'AM';
+  const hr12 = ((hh + 11) % 12) + 1;
+  return `${hr12}:${mm} ${suffix}`;
+}
+
+function extractExamNeedleFromQuery(queryText) {
+  const t = String(queryText || '').toLowerCase();
+
+  // Order matters: check full names first to avoid collisions like "os" inside other words.
+  // We also include the expected course codes from the demo schedule so the bot stays deterministic even
+  // if older demo data exists in D1.
+  if (t.includes('operating systems') || /\bos\b/.test(t)) return { label: 'Operating Systems', titleNeedle: 'Operating Systems', codeNeedle: 'CSA325' };
+  if (t.includes('advanced machine learning') || t.includes('aml')) return { label: 'Advanced Machine Learning', titleNeedle: 'Advanced Machine Learning', codeNeedle: 'CSA333' };
+  if (t.includes('advanced discrete mathematics') || t.includes('adm')) return { label: 'Advanced Discrete Mathematics', titleNeedle: 'Advanced Discrete Mathematics', codeNeedle: 'CSA331' };
+  if (t.includes('deep learning') || t.includes('dl')) return { label: 'Deep Learning', titleNeedle: 'Deep Learning', codeNeedle: 'CSA332' };
+  if (t.includes('devops')) return { label: 'DevOps', titleNeedle: 'DevOps', codeNeedle: null };
+
+  return null;
+}
+
+function extractExamWindowFromDescription(description) {
+  const d = String(description || '');
+  // Examples: "Time window: 10:00-13:00" or "10:00–13:00"
+  const m = d.match(/(\d{2}:\d{2})\s*[–-]\s*(\d{2}:\d{2})/);
+  if (!m) return null;
+  return { start: m[1], end: m[2] };
+}
+
+async function handleUpcomingEvents(env, param1 = null, param2 = null) {
+  // Backwards compatible signature:
+  // - handleUpcomingEvents(env, 7) -> daysAhead = 7
+  // - handleUpcomingEvents(env, "query text") -> daysAhead default + optional filtering
+  let daysAhead = 45;
+  let queryText = null;
+
+  if (typeof param1 === 'number') daysAhead = param1;
+  else if (typeof param1 === 'string') queryText = param1;
+
+  if (typeof param2 === 'number') daysAhead = param2;
+
   try {
     const events = await getUpcomingEvents(env, daysAhead);
 
-    if (events.length === 0) {
+    const requestedExam = queryText ? extractExamNeedleFromQuery(queryText) : null;
+    const filtered = requestedExam
+      ? events.filter(e => {
+        const title = String(e.title || '').toLowerCase();
+        const okTitle = title.includes(String(requestedExam.titleNeedle || '').toLowerCase());
+        const okCode = requestedExam.codeNeedle ? title.includes(String(requestedExam.codeNeedle).toLowerCase()) : true;
+        return okTitle && okCode;
+      })
+      : events;
+
+    if (filtered.length === 0) {
+      if (requestedExam) {
+        return `📌 I couldn't find a ${requestedExam.label} exam in the next ${daysAhead} days.`;
+      }
       return `📌 *No events in the next ${daysAhead} days*\n\nAdd one with:\n\`/event add 2025-12-01 exam "Final OS Exam"\``;
     }
 
     const typeEmoji = { exam: '📝', assignment: '📚', deadline: '⏰', other: '📌' };
-    const lines = events.map(e => {
+
+    // If the user asked for a specific exam subject, answer directly.
+    if (requestedExam && filtered.length === 1) {
+      const e = filtered[0];
+      const timeRange = e.description ? extractExamWindowFromDescription(e.description) : null;
+      const start = e.event_time ? formatTime12(e.event_time) : '';
+      const end = timeRange?.end ? formatTime12(timeRange.end) : '';
+      const timeText = timeRange ? `${formatTime12(timeRange.start)} – ${end}` : start;
+      return `📝 *${requestedExam.label} exam* is on ${formatDate(e.event_date)} at ${timeText}.`;
+    }
+
+    const lines = filtered.map(e => {
       const emoji = typeEmoji[e.type] || '📌';
       const time = e.event_time ? ` at ${e.event_time}` : '';
       const desc = e.description ? `\n  _${e.description}_` : '';
       return `${emoji} *${formatDate(e.event_date)}*${time} — ${e.title} _(ID: ${e.id})_${desc}`;
     });
 
-    return `📌 *Upcoming Events (${daysAhead} days)*\n\n${lines.join('\n\n')}`;
+    const prefix = requestedExam
+      ? `📌 *Upcoming ${requestedExam.label} Exams (${daysAhead} days)*`
+      : `📌 *Upcoming Events (${daysAhead} days)*`;
+
+    return `${prefix}\n\n${lines.join('\n\n')}`;
   } catch (err) {
     console.error(JSON.stringify({ event: 'upcoming_events_failed', error: err.message }));
     return "Sorry, I couldn't fetch upcoming events. Please try again.";
   }
+}
+
+async function handleStudentProfileQuery(text, env) {
+  const raw = await env.NOTES_KV.get('profile:student');
+  if (!raw) {
+    return "I don't have your student profile yet. Please seed demo data first.";
+  }
+
+  let profile = null;
+  try {
+    profile = JSON.parse(raw);
+  } catch (_) {
+    profile = null;
+  }
+
+  if (!profile) return "I couldn't read your student profile data.";
+
+  const t = String(text || '').toLowerCase();
+  if (t.includes('cgpa')) {
+    const cgpaNum = typeof profile.cgpa === 'number' ? profile.cgpa : Number(profile.cgpa);
+    const cgpaText = Number.isFinite(cgpaNum) ? cgpaNum.toFixed(2) : String(profile.cgpa);
+    return `📌 *Your CGPA:* ${cgpaText}`;
+  }
+  if (t.includes('semester')) {
+    return `🎓 *Your semester:* ${profile.semester}`;
+  }
+  if (t.includes('branch')) {
+    return `🏷️ *Your branch:* ${profile.branch}`;
+  }
+  if (t.includes('enrol') || t.includes('enrollment')) {
+    return `🪪 *Enrollment no.:* ${profile.enrollmentNo || profile.enrollment || profile.enrolmentNo || profile.enrolment}`;
+  }
+  // Fallback: show both the requested fields
+  const semesterLine = profile.semester != null ? `Semester ${profile.semester}` : null;
+  const cgpaLine = profile.cgpa != null ? `CGPA ${profile.cgpa}` : null;
+  return `📌 ${[semesterLine, cgpaLine].filter(Boolean).join(' · ')}`;
 }
 
 async function handleTodayEvents(env) {
@@ -725,7 +819,13 @@ async function handleSummary(text, env) {
     return `I don't have wiki notes for *${subject}* yet.\n\nAdd notes with:\n\`/note subject:${subject.replace(/\s+/g, '')} your content\`\n\nOr check available subjects with \`/wiki list\``;
   }
 
-  return formatSubjectSummary(subject, nodes);
+  // Sort for deterministic ordering (useful for "in short" demo queries).
+  nodes.sort((a, b) => String(a.conceptSlug || a.concept || '').localeCompare(String(b.conceptSlug || b.concept || '')));
+
+  const isShort = /\bin\s+short\b/i.test(text) || /\bin\s+brief\b/i.test(text);
+  const nodesToUse = isShort ? nodes.slice(0, 2) : nodes;
+
+  return formatSubjectSummary(subject, nodesToUse);
 }
 
 function parseSubjectFromSummaryQuery(text) {
@@ -741,6 +841,10 @@ function parseSubjectFromSummaryQuery(text) {
     if (match) {
       return match[1].trim()
         .replace(/^(my|the)\s+/i, '')
+        // Handle "in short / in brief" style suffixes in demo queries
+        .replace(/\s+(in\s+)?short$/i, '')
+        .replace(/\s+(in\s+)?brief$/i, '')
+        .replace(/\s+notes$/i, '')
         .trim();
     }
   }
@@ -901,13 +1005,18 @@ async function handleSetReminderIntent(text, env, userId) {
 }
 
 function handleUnknown(text) {
-  return `I'm not sure what you mean. Here's what I can help with:
+  return `🤔 *I'm not quite sure how to help with that yet.*
 
-📝 *Add a note:* \`/note your content here\`
-📅 *Today's classes:* \`/today\` or ask "what are my classes today"
-📌 *Upcoming events:* \`/upcoming\` or ask "what deadlines do I have"
-🧠 *Explain a topic:* "explain deadlocks" or "what is a semaphore"
-🔍 *Search your notes:* "how does TCP work" or "what did I write about sorting"
-📋 *Summarize:* "summarize my OS notes"
-⏰ *Set a reminder:* "remind me about the exam on Dec 1"`;
+Try asking something like:
+• "What are my classes today?"
+• "Show me upcoming exams"
+• "Explain binary search trees"
+• "Summarize my OS notes"
+• "Remind me to study at 7pm"
+
+Or use these commands:
+📝 \`/note\` — Save study material
+📅 \`/today\` — Today's schedule
+📌 \`/upcoming\` — Future events
+📋 \`/wiki list\` — Browse topics`;
 }

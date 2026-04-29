@@ -1,10 +1,10 @@
-import { embedText, getRawNote } from './knowledge.js';
+import { embedText, getRawNote, getNoteChunks } from './knowledge.js';
 import { chunkText } from './chunker.js';
 
 export async function searchNotes(env, query, options = {}) {
   const {
     topK = 8,
-    minScore = 0.55,
+    minScore = 0.45,
     maxChunks = 5
   } = options;
 
@@ -49,7 +49,10 @@ export async function searchNotes(env, query, options = {}) {
         continue;
       }
 
-      const allChunks = chunkText(noteData.text);
+      const storedChunks = await getNoteChunks(env, noteId);
+      const allChunks = storedChunks && storedChunks.length > 0
+        ? storedChunks
+        : chunkText(noteData.text);
       const chunkText_ = allChunks[chunkIndex] || allChunks[0];
 
       if (!chunkText_) continue;

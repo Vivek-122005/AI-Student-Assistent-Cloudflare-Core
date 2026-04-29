@@ -1,17 +1,30 @@
-export async function extractPdfText(buffer) {
-  console.log(JSON.stringify({ event: 'pdf_extraction_started', buffer_length: buffer.byteLength }));
+/**
+ * PDF Text Extraction strategy for Cloudflare Workers
+ * 
+ * Note: Real PDF parsing (e.g. via pdf.js) often exceeds Worker script size limits
+ * or memory limits for large files (10MB+).
+ */
+export async function extractPdfText(buffer, mimeType) {
+  const sizeMB = buffer.byteLength / (1024 * 1024);
   
-  try {
-    const uint8Array = new Uint8Array(buffer);
-    const base64 = btoa(String.fromCharCode(...uint8Array));
-    
-    const response = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent('data:application/pdf;base64,' + base64), {
-      method: 'GET'
-    });
-    
-    return `[PDF content extracted - ${buffer.byteLength} bytes]\n\nNote: PDF processing requires server-side capabilities. The file has been logged for processing.`;
-  } catch (error) {
-    console.error(JSON.stringify({ event: 'pdf_extraction_failed', error: error.message }));
-    return null;
+  console.log(JSON.stringify({ 
+    event: 'pdf_extraction_attempt', 
+    size_mb: sizeMB.toFixed(2) 
+  }));
+
+  if (sizeMB > 2) {
+    return {
+      success: false,
+      error: `PDF is too large (${sizeMB.toFixed(1)}MB). Cloudflare Workers can only process files under 2MB.`,
+      suggestion: "Try copying the text from the PDF and sending it as a message, or split the PDF into smaller parts."
+    };
   }
+
+  // If it's a small PDF, we still have the issue of lack of libraries.
+  // We'll return a graceful message for now.
+  return {
+    success: false,
+    error: "Direct PDF text extraction is currently limited.",
+    suggestion: "Please send the text directly or as an image (we support OCR for images!)."
+  };
 }

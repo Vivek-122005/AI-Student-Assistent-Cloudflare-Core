@@ -163,6 +163,55 @@ export async function getUserIdsWithReminders(env) {
   return results ? results.map(r => r.user_id) : [];
 }
 
+export async function saveFileIngestionMetadata(env, metadata) {
+  try {
+    await env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS file_ingestions (
+         id INTEGER PRIMARY KEY AUTOINCREMENT,
+         note_id TEXT NOT NULL,
+         user_id TEXT,
+         chat_id TEXT,
+         telegram_file_id TEXT,
+         file_name TEXT,
+         mime_type TEXT,
+         file_hash TEXT,
+         subject TEXT,
+         source_type TEXT,
+         extracted_chars INTEGER,
+         chunk_count INTEGER,
+         status TEXT,
+         error_message TEXT,
+         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+       )`
+    ).run();
+
+    await env.DB.prepare(
+      `INSERT INTO file_ingestions
+       (note_id, user_id, chat_id, telegram_file_id, file_name, mime_type, file_hash, subject, source_type, extracted_chars, chunk_count, status, error_message)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      metadata.noteId,
+      metadata.userId || null,
+      metadata.chatId || null,
+      metadata.telegramFileId || null,
+      metadata.fileName || null,
+      metadata.mimeType || null,
+      metadata.fileHash || null,
+      metadata.subject || 'General',
+      metadata.sourceType || 'upload',
+      metadata.extractedChars || 0,
+      metadata.chunkCount || 0,
+      metadata.status || 'success',
+      metadata.errorMessage || null
+    ).run();
+  } catch (err) {
+    console.error(JSON.stringify({
+      event: 'file_ingestion_metadata_save_failed',
+      error: err.message
+    }));
+  }
+}
+
 export async function isUserWhitelisted(env, userId) {
   const { results } = await env.DB.prepare(
     `SELECT user_id FROM whitelisted_users WHERE user_id = ?`
